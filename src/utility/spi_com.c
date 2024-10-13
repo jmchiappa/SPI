@@ -1,13 +1,40 @@
-/*
- * Copyright (c) 2016 Frederic Pillon <frederic.pillon@st.com> for
- * STMicroelectronics. All right reserved.
- * Interface utility of the spi module for arduino.
- *
- * This file is free software; you can redistribute it and/or modify
- * it under the terms of either the GNU General Public License version 2
- * or the GNU Lesser General Public License version 2.1, both as
- * published by the Free Software Foundation.
- */
+/**
+  ******************************************************************************
+  * @file    spi_com.c
+  * @author  WI6LABS
+  * @version V1.0.0
+  * @date    01-August-2016
+  * @brief   provide the SPI interface
+  *
+  ******************************************************************************
+  * @attention
+  *
+  * <h2><center>&copy; COPYRIGHT(c) 2016 STMicroelectronics</center></h2>
+  *
+  * Redistribution and use in source and binary forms, with or without modification,
+  * are permitted provided that the following conditions are met:
+  *   1. Redistributions of source code must retain the above copyright notice,
+  *      this list of conditions and the following disclaimer.
+  *   2. Redistributions in binary form must reproduce the above copyright notice,
+  *      this list of conditions and the following disclaimer in the documentation
+  *      and/or other materials provided with the distribution.
+  *   3. Neither the name of STMicroelectronics nor the names of its contributors
+  *      may be used to endorse or promote products derived from this software
+  *      without specific prior written permission.
+  *
+  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+  * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+  * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+  * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+  * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+  * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+  * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+  * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+  *
+  ******************************************************************************
+  */
 #include "wiring_time.h"
 #include "core_debug.h"
 #include "stm32_def.h"
@@ -16,10 +43,15 @@
 #include "pinconfig.h"
 #include "stm32yyxx_ll_spi.h"
 
+#include "dma.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
+uint8_t bCanTransmit = TRUE;
+
+SPI_HandleTypeDef hspi;
 /* Private Functions */
 /**
   * @brief  return clock freq of an SPI instance
@@ -30,7 +62,7 @@ uint32_t spi_getClkFreqInst(SPI_TypeDef *spi_inst)
 {
   uint32_t spi_freq = SystemCoreClock;
   if (spi_inst != NP) {
-#if defined(STM32C0xx) || defined(STM32F0xx) || defined(STM32G0xx)
+#if defined(STM32F0xx) || defined(STM32G0xx)
     /* SPIx source CLK is PCKL1 */
     spi_freq = HAL_RCC_GetPCLK1Freq();
 #else
@@ -132,12 +164,6 @@ uint32_t spi_getClkFreqInst(SPI_TypeDef *spi_inst)
       }
     }
 #endif // SPI6_BASE
-#if defined(SUBGHZSPI_BASE)
-    if (spi_inst == SUBGHZSPI) {
-      /* Source CLK is APB3 (PCLK3) is derived from AHB3 clock  */
-      spi_freq = HAL_RCC_GetHCLK3Freq();
-    }
-#endif // SUBGHZSPI_BASE
 #endif
   }
   return spi_freq;
@@ -154,14 +180,7 @@ uint32_t spi_getClkFreq(spi_t *obj)
   uint32_t spi_freq = SystemCoreClock;
 
   if (obj != NULL) {
-#if defined(SUBGHZSPI_BASE)
-    if (obj->handle.Instance == SUBGHZSPI) {
-      spi_inst = SUBGHZSPI;
-    } else
-#endif
-    {
-      spi_inst = pinmap_peripheral(obj->pin_sclk, PinMap_SPI_SCLK);
-    }
+    spi_inst = pinmap_peripheral(obj->pin_sclk, PinMap_SPI_SCLK);
 
     if (spi_inst != NP) {
       spi_freq = spi_getClkFreqInst(spi_inst);
@@ -187,7 +206,7 @@ static uint32_t compute_disable_delay(spi_t *obj)
   SPI_HandleTypeDef *handle = &(obj->handle);
 
   prescaler = 1 << ((handle->Init.BaudRatePrescaler >> SPI_CFG1_MBR_Pos) + 1);
-  disable_delay = (((prescaler * 1000000) / spi_freq) / 2) + 1;
+  disable_delay = ((prescaler * 1000000) / spi_freq) / 2;
   return disable_delay;
 }
 #endif
@@ -200,49 +219,39 @@ static uint32_t compute_disable_delay(spi_t *obj)
   * @param  msb : set to 1 in msb first
   * @retval None
   */
-void spi_init(spi_t *obj, uint32_t speed, SPIMode mode, uint8_t msb)
+void spi_init(spi_t *obj, uint32_t speed, spi_mode_e mode, uint8_t msb)
 {
   if (obj == NULL) {
     return;
   }
-
+  MX_DMA_Init();
   SPI_HandleTypeDef *handle = &(obj->handle);
+  hspi = obj->handle;
   uint32_t spi_freq = 0;
   uint32_t pull = 0;
 
-#if defined(SUBGHZSPI_BASE)
-  if (obj->spi != SUBGHZSPI) {
-#endif
-    // Determine the SPI to use
-    SPI_TypeDef *spi_mosi = pinmap_peripheral(obj->pin_mosi, PinMap_SPI_MOSI);
-    SPI_TypeDef *spi_miso = pinmap_peripheral(obj->pin_miso, PinMap_SPI_MISO);
-    SPI_TypeDef *spi_sclk = pinmap_peripheral(obj->pin_sclk, PinMap_SPI_SCLK);
-    SPI_TypeDef *spi_ssel = pinmap_peripheral(obj->pin_ssel, PinMap_SPI_SSEL);
+  // Determine the SPI to use
+  SPI_TypeDef *spi_mosi = pinmap_peripheral(obj->pin_mosi, PinMap_SPI_MOSI);
+  SPI_TypeDef *spi_miso = pinmap_peripheral(obj->pin_miso, PinMap_SPI_MISO);
+  SPI_TypeDef *spi_sclk = pinmap_peripheral(obj->pin_sclk, PinMap_SPI_SCLK);
+  SPI_TypeDef *spi_ssel = pinmap_peripheral(obj->pin_ssel, PinMap_SPI_SSEL);
 
-    /* Pins MOSI/MISO/SCLK must not be NP. ssel can be NP. */
-    if (spi_mosi == NP || spi_miso == NP || spi_sclk == NP) {
-      core_debug("ERROR: at least one SPI pin has no peripheral\n");
-      return;
-    }
-
-    SPI_TypeDef *spi_data = pinmap_merge_peripheral(spi_mosi, spi_miso);
-    SPI_TypeDef *spi_cntl = pinmap_merge_peripheral(spi_sclk, spi_ssel);
-
-    obj->spi = pinmap_merge_peripheral(spi_data, spi_cntl);
-
-    // Are all pins connected to the same SPI instance?
-    if (spi_data == NP || spi_cntl == NP || obj->spi == NP) {
-      core_debug("ERROR: SPI pins mismatch\n");
-      return;
-    }
-#if defined(SUBGHZSPI_BASE)
-  } else {
-    if (obj->pin_mosi != NC || obj->pin_miso != NC || obj->pin_sclk != NC || obj->pin_ssel != NC) {
-      core_debug("ERROR: SUBGHZ_SPI cannot define custom pins\n");
-      return;
-    }
+  /* Pins MOSI/MISO/SCLK must not be NP. ssel can be NP. */
+  if (spi_mosi == NP || spi_miso == NP || spi_sclk == NP) {
+    core_debug("ERROR: at least one SPI pin has no peripheral\n");
+    return;
   }
-#endif
+
+  SPI_TypeDef *spi_data = pinmap_merge_peripheral(spi_mosi, spi_miso);
+  SPI_TypeDef *spi_cntl = pinmap_merge_peripheral(spi_sclk, spi_ssel);
+
+  obj->spi = pinmap_merge_peripheral(spi_data, spi_cntl);
+
+  // Are all pins connected to the same SPI instance?
+  if (spi_data == NP || spi_cntl == NP || obj->spi == NP) {
+    core_debug("ERROR: SPI pins mismatch\n");
+    return;
+  }
 
   // Configure the SPI pins
   if (obj->pin_ssel != NC) {
@@ -256,7 +265,6 @@ void spi_init(spi_t *obj, uint32_t speed, SPIMode mode, uint8_t msb)
   handle->Init.Mode              = SPI_MODE_MASTER;
 
   spi_freq = spi_getClkFreqInst(obj->spi);
-  /* For SUBGHZSPI,  'SPI_BAUDRATEPRESCALER_*' == 'SUBGHZSPI_BAUDRATEPRESCALER_*' */
   if (speed >= (spi_freq / SPI_SPEED_CLOCK_DIV2_MHZ)) {
     handle->Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_2;
   } else if (speed >= (spi_freq / SPI_SPEED_CLOCK_DIV4_MHZ)) {
@@ -286,13 +294,13 @@ void spi_init(spi_t *obj, uint32_t speed, SPIMode mode, uint8_t msb)
 
   handle->Init.Direction         = SPI_DIRECTION_2LINES;
 
-  if ((mode == SPI_MODE0) || (mode == SPI_MODE2)) {
+  if ((mode == SPI_MODE_0) || (mode == SPI_MODE_2)) {
     handle->Init.CLKPhase          = SPI_PHASE_1EDGE;
   } else {
     handle->Init.CLKPhase          = SPI_PHASE_2EDGE;
   }
 
-  if ((mode == SPI_MODE0) || (mode == SPI_MODE1)) {
+  if ((mode == SPI_MODE_0) || (mode == SPI_MODE_1)) {
     handle->Init.CLKPolarity       = SPI_POLARITY_LOW;
   } else {
     handle->Init.CLKPolarity       = SPI_POLARITY_HIGH;
@@ -309,6 +317,7 @@ void spi_init(spi_t *obj, uint32_t speed, SPIMode mode, uint8_t msb)
   }
 
   handle->Init.TIMode            = SPI_TIMODE_DISABLE;
+
 #if defined(SPI_NSS_PULSE_DISABLE)
   handle->Init.NSSPMode          = SPI_NSS_PULSE_DISABLE;
 #endif
@@ -316,23 +325,18 @@ void spi_init(spi_t *obj, uint32_t speed, SPIMode mode, uint8_t msb)
   handle->Init.MasterKeepIOState = SPI_MASTER_KEEP_IO_STATE_ENABLE;  /* Recommended setting to avoid glitches */
 #endif
 
-#if defined(SUBGHZSPI_BASE)
-  if (handle->Instance != SUBGHZSPI) {
-#endif
-    /* Configure SPI GPIO pins */
-    pinmap_pinout(obj->pin_mosi, PinMap_SPI_MOSI);
-    pinmap_pinout(obj->pin_miso, PinMap_SPI_MISO);
-    pinmap_pinout(obj->pin_sclk, PinMap_SPI_SCLK);
-    /*
-    * According the STM32 Datasheet for SPI peripheral we need to PULLDOWN
-    * or PULLUP the SCK pin according the polarity used.
-    */
-    pull = (handle->Init.CLKPolarity == SPI_POLARITY_LOW) ? GPIO_PULLDOWN : GPIO_PULLUP;
-    pin_PullConfig(get_GPIO_Port(STM_PORT(obj->pin_sclk)), STM_LL_GPIO_PIN(obj->pin_sclk), pull);
-    pinmap_pinout(obj->pin_ssel, PinMap_SPI_SSEL);
-#if defined(SUBGHZSPI_BASE)
-  }
-#endif
+  /* Configure SPI GPIO pins */
+  pinmap_pinout(obj->pin_mosi, PinMap_SPI_MOSI);
+  pinmap_pinout(obj->pin_miso, PinMap_SPI_MISO);
+  pinmap_pinout(obj->pin_sclk, PinMap_SPI_SCLK);
+  /*
+   * According the STM32 Datasheet for SPI peripheral we need to PULLDOWN
+   * or PULLUP the SCK pin according the polarity used.
+   */
+  pull = (handle->Init.CLKPolarity == SPI_POLARITY_LOW) ? GPIO_PULLDOWN : GPIO_PULLUP;
+  pin_PullConfig(get_GPIO_Port(STM_PORT(obj->pin_sclk)), STM_LL_GPIO_PIN(obj->pin_sclk), pull);
+  pinmap_pinout(obj->pin_ssel, PinMap_SPI_SSEL);
+
 #if defined SPI1_BASE
   // Enable SPI clock
   if (handle->Instance == SPI1) {
@@ -379,14 +383,6 @@ void spi_init(spi_t *obj, uint32_t speed, SPIMode mode, uint8_t msb)
     __HAL_RCC_SPI6_CLK_ENABLE();
     __HAL_RCC_SPI6_FORCE_RESET();
     __HAL_RCC_SPI6_RELEASE_RESET();
-  }
-#endif
-
-#if defined SUBGHZSPI_BASE
-  if (handle->Instance == SUBGHZSPI) {
-    __HAL_RCC_SUBGHZSPI_CLK_ENABLE();
-    __HAL_RCC_SUBGHZSPI_FORCE_RESET();
-    __HAL_RCC_SUBGHZSPI_RELEASE_RESET();
   }
 #endif
 
@@ -459,14 +455,19 @@ void spi_deinit(spi_t *obj)
     __HAL_RCC_SPI6_CLK_DISABLE();
   }
 #endif
+}
 
-#if defined SUBGHZSPI_BASE
-  if (handle->Instance == SUBGHZSPI) {
-    __HAL_RCC_SUBGHZSPI_FORCE_RESET();
-    __HAL_RCC_SUBGHZSPI_RELEASE_RESET();
-    __HAL_RCC_SUBGHZSPI_CLK_DISABLE();
-  }
-#endif
+/**
+  * @brief This function is implemented by user to send data over SPI interface
+  * @param  obj : pointer to spi_t structure
+  * @param  Data : data to be sent
+  * @param  len : length in bytes of the data to be sent
+  * @param  Timeout: Timeout duration in tick
+  * @retval status of the send operation (0) in case of error
+  */
+spi_status_e spi_send(spi_t *obj, uint8_t *Data, uint16_t len, uint32_t Timeout)
+{
+  return spi_transfer(obj, Data, Data, len, Timeout, 1 /* SPI_TRANSMITONLY */);
 }
 
 /**
@@ -474,73 +475,97 @@ void spi_deinit(spi_t *obj)
   *         SPI interface
   * @param  obj : pointer to spi_t structure
   * @param  tx_buffer : tx data to send before reception
-  * @param  rx_buffer : rx data to receive if not numm
+  * @param  rx_buffer : data to receive
   * @param  len : length in byte of the data to send and receive
+  * @param  Timeout: Timeout duration in tick
+  * @param  skipReceive: skip receiving data after transmit or not
   * @retval status of the send operation (0) in case of error
   */
-spi_status_e spi_transfer(spi_t *obj, const uint8_t *tx_buffer, uint8_t *rx_buffer,
-                          uint16_t len)
+spi_status_e spi_transfer(spi_t *obj, uint8_t *tx_buffer, uint8_t *rx_buffer,
+                          uint16_t len, uint32_t Timeout, bool skipReceive)
 {
   spi_status_e ret = SPI_OK;
   uint32_t tickstart, size = len;
   SPI_TypeDef *_SPI = obj->handle.Instance;
-  uint8_t *tx_buf = (uint8_t *)tx_buffer;
 
-  if (len == 0) {
-    ret = SPI_ERROR;
-  } else {
-    tickstart = HAL_GetTick();
-
+  if ((obj == NULL) || (len == 0) || (Timeout == 0U)) {
+    return Timeout > 0U ? SPI_ERROR : SPI_TIMEOUT;
+  }
+  tickstart = HAL_GetTick();
+  if(len < 1) {
 #if defined(SPI_CR2_TSIZE)
-    /* Start transfer */
-    LL_SPI_SetTransferSize(_SPI, size);
-    LL_SPI_Enable(_SPI);
-    LL_SPI_StartMasterTransfer(_SPI);
+  /* Start transfer */
+  LL_SPI_SetTransferSize(_SPI, size);
+  LL_SPI_Enable(_SPI);
+  LL_SPI_StartMasterTransfer(_SPI);
 #endif
 
-    while (size--) {
+  while (size--) {
 #if defined(SPI_SR_TXP)
-      while (!LL_SPI_IsActiveFlag_TXP(_SPI));
+    while (!LL_SPI_IsActiveFlag_TXP(_SPI));
 #else
-      while (!LL_SPI_IsActiveFlag_TXE(_SPI));
+    while (!LL_SPI_IsActiveFlag_TXE(_SPI));
 #endif
-      LL_SPI_TransmitData8(_SPI, tx_buf ? *tx_buf++ : 0XFF);
+    LL_SPI_TransmitData8(_SPI, *tx_buffer++);
 
+    if (!skipReceive) {
 #if defined(SPI_SR_RXP)
       while (!LL_SPI_IsActiveFlag_RXP(_SPI));
 #else
       while (!LL_SPI_IsActiveFlag_RXNE(_SPI));
 #endif
-      if (rx_buffer) {
-        *rx_buffer++ = LL_SPI_ReceiveData8(_SPI);
-      } else {
-        LL_SPI_ReceiveData8(_SPI);
-      }
-      if ((SPI_TRANSFER_TIMEOUT != HAL_MAX_DELAY) &&
-          (HAL_GetTick() - tickstart >= SPI_TRANSFER_TIMEOUT)) {
-        ret = SPI_TIMEOUT;
-        break;
-      }
+      *rx_buffer++ = LL_SPI_ReceiveData8(_SPI);
     }
+    if ((Timeout != HAL_MAX_DELAY) && (HAL_GetTick() - tickstart >= Timeout)) {
+      ret = SPI_TIMEOUT;
+      break;
+    }
+  }
 
 #if defined(SPI_IFCR_EOTC)
-    // Add a delay before disabling SPI otherwise last-bit/last-clock may be truncated
-    // See https://github.com/stm32duino/Arduino_Core_STM32/issues/1294
-    // Computed delay is half SPI clock
-    delayMicroseconds(obj->disable_delay);
+  // Add a delay before disabling SPI otherwise last-bit/last-clock may be truncated
+  // See https://github.com/stm32duino/Arduino_Core_STM32/issues/1294
+  // Computed delay is half SPI clock
+  delayMicroseconds(obj->disable_delay);
 
-    /* Close transfer */
-    /* Clear flags */
-    LL_SPI_ClearFlag_EOT(_SPI);
-    LL_SPI_ClearFlag_TXTF(_SPI);
-    /* Disable SPI peripheral */
-    LL_SPI_Disable(_SPI);
+  /* Close transfer */
+  /* Clear flags */
+  LL_SPI_ClearFlag_EOT(_SPI);
+  LL_SPI_ClearFlag_TXTF(_SPI);
+  /* Disable SPI peripheral */
+  LL_SPI_Disable(_SPI);
 #else
-    /* Wait for end of transfer */
-    while (LL_SPI_IsActiveFlag_BSY(_SPI));
+  /* Wait for end of transfer */
+  while (LL_SPI_IsActiveFlag_BSY(_SPI));
 #endif
   }
+  else {
+    if(bCanTransmit) {
+      HAL_NVIC_EnableIRQ(SPI1_IRQn);
+      bCanTransmit = FALSE;
+      HAL_SPI_Transmit_DMA(&(obj->handle), tx_buffer, len);
+      while(bCanTransmit==FALSE){
+        if (!skipReceive) {
+
+    #if defined(SPI_SR_RXP)
+          while (!LL_SPI_IsActiveFlag_RXP(_SPI));
+    #else
+          while (!LL_SPI_IsActiveFlag_RXNE(_SPI));
+    #endif
+          *rx_buffer++ = LL_SPI_ReceiveData8(_SPI);
+        }
+        if ((Timeout != HAL_MAX_DELAY) && (HAL_GetTick() - tickstart >= Timeout)) {
+          ret = SPI_TIMEOUT;
+          break;
+        }
+      }
+    }
+  }
   return ret;
+}
+
+void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *handle) {
+	bCanTransmit = TRUE;
 }
 
 #ifdef __cplusplus

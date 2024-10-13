@@ -16,6 +16,7 @@
 #include <stdio.h>
 extern "C" {
 #include "utility/spi_com.h"
+#include "utility/dma.h"
 }
 
 // SPI_HAS_TRANSACTION means SPI has
@@ -38,48 +39,77 @@ extern "C" {
 #define SPI_CLOCK_DIV64  64
 #define SPI_CLOCK_DIV128 128
 
-#define SPI_TRANSMITRECEIVE false
-#define SPI_TRANSMITONLY true
+// SPI mode parameters for SPISettings
+#define SPI_MODE0 0x00
+#define SPI_MODE1 0x01
+#define SPI_MODE2 0x02
+#define SPI_MODE3 0x03
+
+#define SPI_TRANSMITRECEIVE 0x0
+#define SPI_TRANSMITONLY 0x1
+
+// Transfer mode
+enum SPITransferMode {
+  SPI_CONTINUE, /* Transfer not finished: CS pin kept active */
+  SPI_LAST      /* Transfer ended: CS pin released */
+};
+
+// Indicates the user controls himself the CS pin outside of the spi class
+#define CS_PIN_CONTROLLED_BY_USER  NUM_DIGITAL_PINS
+
+// Indicates there is no configuration selected
+#define NO_CONFIG   ((int16_t)(-1))
+
+// Defines a default timeout delay in milliseconds for the SPI transfer
+#ifndef SPI_TRANSFER_TIMEOUT
+  #define SPI_TRANSFER_TIMEOUT 1000
+#endif
+
+/*
+ * Defines the number of settings saved per SPI instance. Must be in range 1 to 254.
+ * Can be redefined in variant.h
+ */
+#ifndef NB_SPI_SETTINGS
+  #define NB_SPI_SETTINGS 4
+#endif
 
 class SPISettings {
   public:
-    constexpr SPISettings(uint32_t clock, BitOrder bitOrder, uint8_t dataMode)
-      : clockFreq(clock),
-        bitOrder(bitOrder),
-        dataMode((SPIMode)dataMode)
-    { }
-    constexpr SPISettings(uint32_t clock, BitOrder bitOrder, SPIMode dataMode)
-      : clockFreq(clock),
-        bitOrder(bitOrder),
-        dataMode(dataMode)
-    { }
-    constexpr SPISettings()
-      : clockFreq(SPI_SPEED_CLOCK_DEFAULT),
-        bitOrder(MSBFIRST),
-        dataMode(SPI_MODE0)
-    { }
-
-    bool operator==(const SPISettings &rhs) const
+    SPISettings(uint32_t clock, BitOrder bitOrder, uint8_t dataMode, bool noRecv = SPI_TRANSMITRECEIVE)
     {
-      if ((this->clockFreq == rhs.clockFreq) &&
-          (this->bitOrder == rhs.bitOrder) &&
-          (this->dataMode == rhs.dataMode)) {
-        return true;
+      clk = clock;
+      bOrder = bitOrder;
+      noReceive = noRecv;
+
+      if (SPI_MODE0 == dataMode) {
+        dMode = SPI_MODE_0;
+      } else if (SPI_MODE1 == dataMode) {
+        dMode = SPI_MODE_1;
+      } else if (SPI_MODE2 == dataMode) {
+        dMode = SPI_MODE_2;
+      } else if (SPI_MODE3 == dataMode) {
+        dMode = SPI_MODE_3;
       }
-      return false;
     }
-
-    bool operator!=(const SPISettings &rhs) const
+    SPISettings()
     {
-      return !(*this == rhs);
+      pinCS = -1;
+      clk = SPI_SPEED_CLOCK_DEFAULT;
+      bOrder = MSBFIRST;
+      dMode = SPI_MODE_0;
     }
-
   private:
-    uint32_t clockFreq; //specifies the spi bus maximum clock speed
-    BitOrder bitOrder;  //bit order (MSBFirst or LSBFirst)
-    SPIMode  dataMode;  //one of the data mode
-
+    int16_t pinCS;      //CS pin associated to the configuration
+    uint32_t clk;       //specifies the spi bus maximum clock speed
+    BitOrder bOrder;    //bit order (MSBFirst or LSBFirst)
+    spi_mode_e dMode;   //one of the data mode
+    //Mode          Clock Polarity (CPOL)   Clock Phase (CPHA)
+    //SPI_MODE0             0                     0
+    //SPI_MODE1             0                     1
+    //SPI_MODE2             1                     0
+    //SPI_MODE3             1                     1
     friend class SPIClass;
+    bool noReceive;
 };
 
 class SPIClass {
@@ -122,38 +152,79 @@ class SPIClass {
       _spi.pin_ssel = (ssel);
     };
 
-    void begin(void);
+    void begin(uint8_t _pin = CS_PIN_CONTROLLED_BY_USER);
     void end(void);
 
     /* This function should be used to configure the SPI instance in case you
      * don't use default parameters.
+     * You can attach another CS pin to the SPI instance and each CS pin can be
+     * attach with specific SPI settings.
      */
-    void beginTransaction(SPISettings settings);
-    void endTransaction(void);
+    void beginTransaction(uint8_t pin, SPISettings settings);
+    void beginTransaction(SPISettings settings)
+    {
+      beginTransaction(CS_PIN_CONTROLLED_BY_USER, settings);
+    }
+
+    void endTransaction(uint8_t pin);
+    void endTransaction(void)
+    {
+      endTransaction(CS_PIN_CONTROLLED_BY_USER);
+    }
 
     /* Transfer functions: must be called after initialization of the SPI
      * instance with begin() or beginTransaction().
+     * You can specify the CS pin to use.
      */
-    uint8_t transfer(uint8_t data, bool skipReceive = SPI_TRANSMITRECEIVE);
-    uint16_t transfer16(uint16_t data, bool skipReceive = SPI_TRANSMITRECEIVE);
-    void transfer(void *buf, size_t count, bool skipReceive = SPI_TRANSMITRECEIVE);
+    byte transfer(uint8_t pin, uint8_t _data, SPITransferMode _mode = SPI_LAST);
+    uint16_t transfer16(uint8_t pin, uint16_t _data, SPITransferMode _mode = SPI_LAST);
+    void transfer(uint8_t pin, void *_buf, size_t _count, SPITransferMode _mode = SPI_LAST);
+    void transfer(byte _pin, void *_bufout, void *_bufin, size_t _count, SPITransferMode _mode = SPI_LAST);
 
-    /* Expand SPI API
-     * https://github.com/arduino/ArduinoCore-API/discussions/189
-     */
-    void transfer(const void *tx_buf, void *rx_buf, size_t count);
+    // Transfer functions when user controls himself the CS pin.
+    byte transfer(uint8_t _data, SPITransferMode _mode = SPI_LAST)
+    {
+      return transfer(CS_PIN_CONTROLLED_BY_USER, _data, _mode);
+    }
+
+    uint16_t transfer16(uint16_t _data, SPITransferMode _mode = SPI_LAST)
+    {
+      return transfer16(CS_PIN_CONTROLLED_BY_USER, _data, _mode);
+    }
+
+    void transfer(void *_buf, size_t _count, SPITransferMode _mode = SPI_LAST)
+    {
+      transfer(CS_PIN_CONTROLLED_BY_USER, _buf, _count, _mode);
+    }
+
+    void transfer(void *_bufout, void *_bufin, size_t _count, SPITransferMode _mode = SPI_LAST)
+    {
+      transfer(CS_PIN_CONTROLLED_BY_USER, _bufout, _bufin, _count, _mode);
+    }
 
     /* These methods are deprecated and kept for compatibility.
      * Use SPISettings with SPI.beginTransaction() to configure SPI parameters.
      */
-    void setBitOrder(BitOrder);
-    void setDataMode(uint8_t);
-    void setDataMode(SPIMode);
-    void setClockDivider(uint8_t);
+    void setBitOrder(uint8_t _pin, BitOrder);
+    void setBitOrder(BitOrder _order)
+    {
+      setBitOrder(CS_PIN_CONTROLLED_BY_USER, _order);
+    }
 
-    // Not implemented functions. Kept for compatibility.
-    void usingInterrupt(int interruptNumber);
-    void notUsingInterrupt(int interruptNumber);
+    void setDataMode(uint8_t _pin, uint8_t);
+    void setDataMode(uint8_t _mode)
+    {
+      setDataMode(CS_PIN_CONTROLLED_BY_USER, _mode);
+    }
+
+    void setClockDivider(uint8_t _pin, uint8_t);
+    void setClockDivider(uint8_t _div)
+    {
+      setClockDivider(CS_PIN_CONTROLLED_BY_USER, _div);
+    }
+
+    // Not implemented functions. Kept for backward compatibility.
+    void usingInterrupt(uint8_t interruptNumber);
     void attachInterrupt(void);
     void detachInterrupt(void);
 
@@ -163,28 +234,75 @@ class SPIClass {
       return &(_spi.handle);
     }
 
-  protected:
+  private:
+    /* Contains various spiSettings for the same spi instance. Each spi spiSettings
+    is associated to a CS pin. */
+    SPISettings   spiSettings[NB_SPI_SETTINGS];
+
+    // Use to know which configuration is selected.
+    int16_t       _CSPinConfig;
+
     // spi instance
     spi_t         _spi;
 
-  private:
-    /* Current SPISettings */
-    SPISettings   _spiSettings = SPISettings();
+
+    typedef enum {
+      GET_IDX = 0,
+      ADD_NEW_PIN = 1
+    } pin_option_t;
+
+    uint8_t pinIdx(uint8_t _pin, pin_option_t option)
+    {
+      uint8_t i;
+
+      if ((_pin > NUM_DIGITAL_PINS) && (!digitalPinIsValid(_pin))) {
+        return NB_SPI_SETTINGS;
+      }
+
+      for (i = 0; i < NB_SPI_SETTINGS; i++) {
+        if (_pin == spiSettings[i].pinCS) {
+          return i;
+        }
+      }
+
+      if (option == ADD_NEW_PIN) {
+        for (i = 0; i < NB_SPI_SETTINGS; i++) {
+          if (spiSettings[i].pinCS == -1) {
+            spiSettings[i].pinCS = _pin;
+            return i;
+          }
+        }
+      }
+      return i;
+    }
+
+    void RemovePin(uint8_t _pin)
+    {
+      if ((_pin > NUM_DIGITAL_PINS) && (!digitalPinIsValid(_pin))) {
+        return;
+      }
+
+      for (uint8_t i = 0; i < NB_SPI_SETTINGS; i++) {
+        if (spiSettings[i].pinCS == _pin) {
+          spiSettings[i].pinCS = -1;
+          spiSettings[i].clk = SPI_SPEED_CLOCK_DEFAULT;
+          spiSettings[i].bOrder = MSBFIRST;
+          spiSettings[i].dMode = SPI_MODE_0;
+        }
+      }
+    }
+
+    void RemoveAllPin(void)
+    {
+      for (uint8_t i = 0; i < NB_SPI_SETTINGS; i++) {
+        spiSettings[i].pinCS = -1;
+        spiSettings[i].clk = SPI_SPEED_CLOCK_DEFAULT;
+        spiSettings[i].bOrder = MSBFIRST;
+        spiSettings[i].dMode = SPI_MODE_0;
+      }
+    }
 };
 
 extern SPIClass SPI;
 
-#if defined(SUBGHZSPI_BASE)
-class SUBGHZSPIClass : public SPIClass {
-  public:
-    SUBGHZSPIClass(): SPIClass{NC, NC, NC, NC}
-    {
-      _spi.spi = SUBGHZSPI;
-    }
-
-    void enableDebugPins(uint32_t mosi = DEBUG_SUBGHZSPI_MOSI, uint32_t miso = DEBUG_SUBGHZSPI_MISO, uint32_t sclk = DEBUG_SUBGHZSPI_SCLK, uint32_t ssel = DEBUG_SUBGHZSPI_SS);
-};
-
 #endif
-
-#endif /* _SPI_H_INCLUDED */
