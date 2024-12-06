@@ -1,8 +1,8 @@
 /* USER CODE BEGIN Header */
 /**
   ******************************************************************************
-  * @file           : main.h
-  * @brief          : Header for main.c file.
+  * @file           : dma.h
+  * @brief          : Header for dma.c file.
   *                   This file contains the common defines of the application.
   ******************************************************************************
   * @attention
@@ -28,13 +28,6 @@ extern "C" {
 
 /* Includes ------------------------------------------------------------------*/
 #include "stm32_def.h"
-#include "stm32l4xx_hal.h"
-
-
-enum {
-	FALSE=0,
-	TRUE
-};
 
 
 void MX_DMA_Init(void);

@@ -49,7 +49,7 @@
 extern "C" {
 #endif
 
-uint8_t bCanTransmit = TRUE;
+uint8_t bCanTransmit = true;
 
 SPI_HandleTypeDef hspi;
 /* Private Functions */
@@ -542,9 +542,9 @@ spi_status_e spi_transfer(spi_t *obj, uint8_t *tx_buffer, uint8_t *rx_buffer,
   else {
     if(bCanTransmit) {
       HAL_NVIC_EnableIRQ(SPI1_IRQn);
-      bCanTransmit = FALSE;
+      bCanTransmit = false;
       HAL_SPI_Transmit_DMA(&(obj->handle), tx_buffer, len);
-      while(bCanTransmit==FALSE){
+      while(bCanTransmit==false){
         if (!skipReceive) {
 
     #if defined(SPI_SR_RXP)
@@ -565,7 +565,7 @@ spi_status_e spi_transfer(spi_t *obj, uint8_t *tx_buffer, uint8_t *rx_buffer,
 }
 
 void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *handle) {
-	bCanTransmit = TRUE;
+	bCanTransmit = true;
 }
 
 #ifdef __cplusplus
