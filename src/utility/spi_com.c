@@ -543,17 +543,18 @@ spi_status_e spi_transfer(spi_t *obj, uint8_t *tx_buffer, uint8_t *rx_buffer,
     if(bCanTransmit) {
       HAL_NVIC_EnableIRQ(SPI1_IRQn);
       bCanTransmit = false;
-      HAL_SPI_Transmit_DMA(&(obj->handle), tx_buffer, len);
+      HAL_SPI_TransmitReceive_DMA(&(obj->handle), tx_buffer, rx_buffer, len);
+      //HAL_SPI_TransmitReceive_DMA(&(obj->handle),tx_buffer, rx_buffer
       while(bCanTransmit==false){
-        if (!skipReceive) {
+    //     if (!skipReceive) {
 
-    #if defined(SPI_SR_RXP)
-          while (!LL_SPI_IsActiveFlag_RXP(_SPI));
-    #else
-          while (!LL_SPI_IsActiveFlag_RXNE(_SPI));
-    #endif
-          *rx_buffer++ = LL_SPI_ReceiveData8(_SPI);
-        }
+    // #if defined(SPI_SR_RXP)
+    //       while (!LL_SPI_IsActiveFlag_RXP(_SPI));
+    // #else
+    //       while (!LL_SPI_IsActiveFlag_RXNE(_SPI));
+    // #endif
+    //       *rx_buffer++ = LL_SPI_ReceiveData8(_SPI);
+    //     }
         if ((Timeout != HAL_MAX_DELAY) && (HAL_GetTick() - tickstart >= Timeout)) {
           ret = SPI_TIMEOUT;
           break;
@@ -564,7 +565,7 @@ spi_status_e spi_transfer(spi_t *obj, uint8_t *tx_buffer, uint8_t *rx_buffer,
   return ret;
 }
 
-void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *handle) {
+void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *handle) {
 	bCanTransmit = true;
 }
 

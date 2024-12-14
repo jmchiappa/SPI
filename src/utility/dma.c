@@ -1,8 +1,6 @@
 #include "dma.h"
 
-DMA_HandleTypeDef hdma_spi1_tx;
 SPI_HandleTypeDef *_hspi1;
-
 
 #if defined(STM32L476xx)
 # include "STM32L476/dma.c.opt"
@@ -13,3 +11,11 @@ SPI_HandleTypeDef *_hspi1;
 #else
 # error "from SPI library : your STM32 model is not supported for now. Please consider to upgrade the library with your STM32 model"
 #endif
+
+/**
+  * @brief This function handles SPI1 global interrupt.
+  */
+void SPI1_IRQHandler(void)
+{
+  HAL_SPI_IRQHandler(_hspi1);
+}
