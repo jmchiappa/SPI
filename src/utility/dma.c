@@ -4,7 +4,7 @@ SPI_HandleTypeDef *_hspi1;
 
 #if defined(STM32L476xx)
 # include "STM32L476/dma.c.opt"
-#elif defined(STM32WB55xx)
+#elif defined(STM32WBxx)
 # include "STM32WB55/dma.c.opt"
 #elif defined(STM32L432xx)
 # include "STM32L432/dma.c.opt"
